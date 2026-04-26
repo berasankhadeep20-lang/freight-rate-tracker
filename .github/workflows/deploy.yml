@@ -1,0 +1,78 @@
+name: Freight Tracker — Fetch & Deploy
+
+on:
+  # Run automatically every 6 hours
+  schedule:
+    - cron: "0 */6 * * *"
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+# Required for GitHub Pages deployment
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  fetch-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ──────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 3. Install dependencies ──────────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Restore DB from cache (persist across runs) ───────────────────────
+      - name: Restore freight DB cache
+        uses: actions/cache@v4
+        with:
+          path: freight_data.db
+          key: freight-db-${{ runner.os }}
+          restore-keys: freight-db-
+
+      # ── 5. Fetch fresh data + regenerate dashboard ───────────────────────────
+      - name: Fetch data & build dashboard
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ALERT_THRESHOLD_PCT: "5.0"
+          HISTORY_DAYS: "365"
+          DASHBOARD_OUTPUT: "docs/index.html"
+        run: |
+          mkdir -p docs
+          python main.py fetch
+
+      # ── 6. Inject last-updated timestamp into the HTML ───────────────────────
+      - name: Stamp build time
+        run: |
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
+          sed -i "s|</title>|</title><meta name='generated' content='${TIMESTAMP}'>|" docs/index.html || true
+
+      # ── 7. Commit updated dashboard to repo ──────────────────────────────────
+      - name: Commit dashboard
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          git diff --staged --quiet || git commit -m "chore: update dashboard [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+          git push
+
+      # ── 8. Deploy docs/ to GitHub Pages ──────────────────────────────────────
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          publish_branch: gh-pages
+          force_orphan: true
